@@ -787,10 +787,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
 
             <div className="overflow-y-auto flex-1 p-6">
               <div className="space-y-4">
-              {/* Box Name / Role */}
+              {/* Box / Node Name */}
               <div>
                 <label className="block text-sm font-medium text-black/70 mb-1">
-                  Box Name / Role <span className="text-red-500">*</span>
+                  Box / Node Name <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
