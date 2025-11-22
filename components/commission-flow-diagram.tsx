@@ -2,7 +2,7 @@
 
 import { payoutNodes, rootNodeId, parentMap } from "@/lib/payout-schema";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
-import { useMemo } from "react";
+import React, { useMemo } from "react";
 
 type CommissionFlowData = {
   developerPayout: number;
@@ -91,7 +91,7 @@ export default function CommissionFlowDiagram({ data }: CommissionFlowDiagramPro
     return childId;
   };
 
-  const renderNode = (nodeId: string, level: number = 0): JSX.Element | null => {
+  const renderNode = (nodeId: string, level: number = 0): React.ReactElement | null => {
     const template = payoutNodes[nodeId];
     if (!template && !nodeId.startsWith("projectLeads_lead_")) return null;
 

@@ -1,10 +1,10 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import CommissionFlowDiagram from "@/components/commission-flow-diagram";
 
-export default function DiagramPage() {
+function DiagramContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [data, setData] = useState<any>(null);
@@ -74,6 +74,24 @@ export default function DiagramPage() {
         <CommissionFlowDiagram data={data} />
       </div>
     </main>
+  );
+}
+
+export default function DiagramPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-[#f5f5f5] pb-16 text-black">
+          <div className="mx-auto flex max-w-6xl flex-col gap-8 px-4 pt-12 sm:px-6 lg:px-8">
+            <div className="rounded-3xl border border-black/10 bg-white p-8 text-center text-sm text-black/60">
+              Loading commission flow diagram...
+            </div>
+          </div>
+        </main>
+      }
+    >
+      <DiagramContent />
+    </Suspense>
   );
 }
 
