@@ -56,10 +56,17 @@ type FlowchartCanvasProps = {
 };
 
 const categoryColors: Record<NodeCategory, { bg: string; border: string; text: string }> = {
-  kw: { bg: "#FEF3C7", border: "#F59E0B", text: "#92400E" }, // Yellow
+  kw: { bg: "#E6DFAF", border: "#F59E0B", text: "#92400E" }, // Yellow
   era: { bg: "#FEE2E2", border: "#EF4444", text: "#991B1B" }, // Red
   ps: { bg: "#DBEAFE", border: "#3B82F6", text: "#1E40AF" }, // Blue
   neutral: { bg: "#F3F4F6", border: "#6B7280", text: "#374151" }, // Gray
+};
+
+const categoryDisplayNames: Record<NodeCategory, string> = {
+  kw: "Yellow",
+  era: "Red",
+  ps: "Blue",
+  neutral: "Neutral",
 };
 
 export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
@@ -95,7 +102,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     tags: [] as string[],
   });
   
-  const { saveFlowchart, updateFlowchart, duplicateFlowchart, isSaving, error } = useFlowchartSave();
+  const { saveFlowchart, updateFlowchart, duplicateFlowchart, deleteFlowchart, isSaving, error } = useFlowchartSave();
 
   // Form state for node creation/editing
   const [formData, setFormData] = useState({
@@ -111,6 +118,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     parentId: null as string | null,
     category: "neutral" as NodeCategory,
   });
+
+  // Track raw input strings to allow typing "0" and continuing
+  const [percentInputStrings, setPercentInputStrings] = useState<string[]>([]);
+  const [fixedInputStrings, setFixedInputStrings] = useState<string[]>([]);
 
   const mouseSensor = useSensor(MouseSensor, {
     activationConstraint: {
@@ -430,7 +441,12 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     setDraggedNodeId(null);
   };
 
-  const handleNodeClick = (nodeId: string) => {
+  const handleNodeClick = (nodeId: string, e?: React.MouseEvent) => {
+    // Prevent opening edit modal if clicking on buttons inside the node
+    if (e && (e.target as HTMLElement).closest('button')) {
+      return;
+    }
+
     if (isConnecting && connectionStart && connectionStart !== nodeId) {
       // Create connection and update parent
       const newConnection: FlowchartConnection = {
@@ -450,7 +466,9 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
       setIsConnecting(false);
       setConnectionStart(null);
     } else {
+      // Open edit modal directly when clicking on node
       setSelectedNode(nodeId);
+      handleEditNode(nodeId);
     }
   };
 
@@ -469,12 +487,14 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
       amountValue: 0,
       usePercent: false,
       useFixed: false,
-      percentValues: [],
-      fixedValues: [],
+      percentValues: [0], // Always start with one field
+      fixedValues: [0], // Always start with one field
       formula: "",
       parentId: null,
       category: "neutral",
     });
+    setPercentInputStrings([""]);
+    setFixedInputStrings([""]);
     setIsNodeModalOpen(true);
   };
 
@@ -482,6 +502,11 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     const node = nodes.find((n) => n.id === nodeId);
     if (node) {
       setEditingNodeId(nodeId);
+      const percentValues = node.percentValues ?? (node.percentValue !== undefined ? [node.percentValue] : []);
+      const fixedValues = node.fixedValues ?? (node.fixedValue !== undefined ? [node.fixedValue] : []);
+      // Always ensure at least one field exists for each type
+      const finalPercentValues = percentValues.length === 0 ? [0] : percentValues;
+      const finalFixedValues = fixedValues.length === 0 ? [0] : fixedValues;
       setFormData({
         label: node.label,
         description: node.description || "",
@@ -489,12 +514,15 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
         amountValue: node.amountValue,
         usePercent: node.usePercent ?? (node.amountType === "percent"),
         useFixed: node.useFixed ?? (node.amountType === "fixed"),
-        percentValues: node.percentValues ?? (node.percentValue !== undefined ? [node.percentValue] : []),
-        fixedValues: node.fixedValues ?? (node.fixedValue !== undefined ? [node.fixedValue] : []),
+        percentValues: finalPercentValues,
+        fixedValues: finalFixedValues,
         formula: node.formula || "",
         parentId: node.parentId,
         category: node.category,
       });
+      // Initialize input strings from values
+      setPercentInputStrings(finalPercentValues.map(v => v === 0 ? "" : String(v)));
+      setFixedInputStrings(finalFixedValues.map(v => v === 0 ? "" : String(v)));
       setIsNodeModalOpen(true);
     }
   };
@@ -607,6 +635,22 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     );
     if (selectedNode === nodeId) {
       setSelectedNode(null);
+    }
+  };
+
+  const handleDuplicateNode = (nodeId: string) => {
+    const nodeToDuplicate = nodes.find((n) => n.id === nodeId);
+    if (nodeToDuplicate) {
+      const duplicatedNode: FlowchartNode = {
+        ...nodeToDuplicate,
+        id: `node-${Date.now()}`,
+        x: nodeToDuplicate.x + 50, // Offset slightly to the right
+        y: nodeToDuplicate.y + 50, // Offset slightly down
+        parentId: null, // Remove parent relationship for duplicate
+      };
+      setNodes((prev) => [...prev, duplicatedNode]);
+      
+      // Note: We don't duplicate connections, as the duplicate is a new independent node
     }
   };
 
@@ -761,6 +805,31 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     setSaveFormData({ ...saveFormData, name: flowchart.name || "" });
     setIsLoadModalOpen(false);
     toast.success(`Loaded flowchart: ${flowchart.name}`);
+  };
+
+  const formatDate = (dateString: string | Date): string => {
+    const date = typeof dateString === 'string' ? new Date(dateString) : dateString;
+    const day = date.getDate().toString().padStart(2, '0');
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[date.getMonth()];
+    const year = date.getFullYear();
+    return `${day} ${month} ${year}`;
+  };
+
+  const handleDeleteFlowchart = async (flowchartId: string, flowchartName: string) => {
+    if (!confirm(`Are you sure you want to delete "${flowchartName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await deleteFlowchart(flowchartId);
+      // Reload the flowcharts list
+      await handleLoadFlowcharts();
+      toast.success(`Flowchart "${flowchartName}" deleted successfully`);
+    } catch (err) {
+      console.error("Error deleting flowchart:", err);
+      toast.error(`Failed to delete flowchart: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
   };
 
   const handleDuplicateFlowchart = async () => {
@@ -1377,7 +1446,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
       {/* Canvas */}
       <div
         ref={canvasRef}
-        className="relative h-[800px] w-full overflow-hidden rounded-xl border border-black/10 bg-[#fafafa] cursor-move"
+        className="relative h-[800px] w-full overflow-hidden rounded-xl border border-black/10 bg-[#fafafa] cursor-move select-none"
         style={{
           backgroundImage: `
             linear-gradient(to right, #e5e5e5 1px, transparent 1px),
@@ -1385,6 +1454,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
           `,
           backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
           cursor: isPanning ? "grabbing" : "grab",
+          userSelect: "none",
         }}
         onMouseDown={(e) => {
           if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
@@ -1408,6 +1478,29 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
             e.preventDefault();
             const delta = e.deltaY > 0 ? 0.9 : 1.1;
             setZoom((prev) => Math.max(0.5, Math.min(2, prev * delta)));
+          }
+        }}
+        onDoubleClick={(e) => {
+          // Prevent default double-click behavior (text selection)
+          e.preventDefault();
+          
+          // Only open modal if clicking directly on canvas background, not on nodes or other elements
+          const target = e.target as HTMLElement;
+          
+          // Check if the click is on the canvas div itself or the SVG background
+          if (target === canvasRef.current || target === e.currentTarget) {
+            handleAddNode();
+            return;
+          }
+          
+          // Check if clicking on SVG or SVG paths (connections) - these are canvas background
+          if (target.tagName === "svg" || target.tagName === "path") {
+            // Make sure we're not clicking on a node by checking if target is within a node
+            // Nodes have the "group" class
+            const isWithinNode = target.closest('.group');
+            if (!isWithinNode) {
+              handleAddNode();
+            }
           }
         }}
       >
@@ -1471,9 +1564,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
               isSelected={selectedNode === node.id}
               isDragging={draggedNodeId === node.id}
               calculatedAmount={nodeAmounts[node.id] || 0}
-              onClick={() => handleNodeClick(node.id)}
+              onClick={(e) => handleNodeClick(node.id, e)}
               onStartConnection={() => handleStartConnection(node.id)}
               onEdit={() => handleEditNode(node.id)}
+              onDuplicate={() => handleDuplicateNode(node.id)}
               onDelete={() => handleDeleteNode(node.id)}
             />
           ))}
@@ -1535,191 +1629,260 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                 <label className="block text-sm font-medium text-black/70 mb-2">
                   Amount Type <span className="text-red-500">*</span>
                 </label>
-                <div className="space-y-3">
-                  {/* Percentage Checkbox */}
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.usePercent}
-                      onChange={(e) => {
-                        const usePercent = e.target.checked;
-                        setFormData({
-                          ...formData,
-                          usePercent,
-                          amountType: usePercent && !formData.useFixed ? "percent" : formData.useFixed ? "percent" : formData.amountType,
-                        });
-                      }}
-                      className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
-                    />
-                    <span className="text-sm font-medium text-black/70">
-                      % of parent amount
-                    </span>
-                  </label>
-
-                  {/* Fixed Amount Checkbox */}
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.useFixed}
-                      onChange={(e) => {
-                        const useFixed = e.target.checked;
-                        setFormData({
-                          ...formData,
-                          useFixed,
-                          amountType: useFixed && !formData.usePercent ? "fixed" : formData.usePercent ? "fixed" : formData.amountType,
-                        });
-                      }}
-                      className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
-                    />
-                    <span className="text-sm font-medium text-black/70">
-                      Fixed dollar amount
-                    </span>
-                  </label>
+                
+                {/* Percentage Section */}
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.usePercent}
+                        onChange={(e) => {
+                          const usePercent = e.target.checked;
+                          setFormData({
+                            ...formData,
+                            usePercent,
+                            amountType: usePercent && !formData.useFixed ? "percent" : formData.useFixed ? "percent" : formData.amountType,
+                          });
+                        }}
+                        className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
+                      />
+                      <span className="text-sm font-medium text-black/70">
+                        % of parent amount
+                      </span>
+                    </label>
+                    {formData.usePercent && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData({
+                            ...formData,
+                            percentValues: [...formData.percentValues, 0],
+                          });
+                          setPercentInputStrings([...percentInputStrings, ""]);
+                        }}
+                        className="text-xs text-[#B40101] font-semibold hover:underline"
+                      >
+                        + Add Percentage
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Percentage Values Input - Always visible */}
+                  <div className="ml-8 mt-2">
+                      <div className="space-y-2">
+                        {formData.percentValues.map((value, index) => {
+                          // Ensure inputStrings array has enough elements
+                          const inputStr = percentInputStrings[index] !== undefined 
+                            ? percentInputStrings[index] 
+                            : (value === 0 ? "" : String(value));
+                          
+                          return (
+                          <div key={index} className="flex items-center gap-2">
+                          <span className="text-sm text-black/60 w-8">%</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={inputStr}
+                            onChange={(e) => {
+                              let inputValue = e.target.value.trim();
+                              
+                              // Allow empty, numbers, dots, commas, and intermediate states like "0," or "0."
+                              // Match: empty, numbers, numbers with one dot/comma, numbers with dot/comma and more digits
+                              if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
+                                // Update input string array
+                                const newInputStrings = [...percentInputStrings];
+                                newInputStrings[index] = inputValue;
+                                setPercentInputStrings(newInputStrings);
+                                
+                                // Replace comma with dot for parsing
+                                const normalizedValue = inputValue.replace(/,/g, '.');
+                                let numValue = 0;
+                                
+                                if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
+                                  numValue = 0;
+                                } else {
+                                  const parsed = parseFloat(normalizedValue);
+                                  numValue = isNaN(parsed) ? 0 : parsed;
+                                }
+                                
+                                // Update numeric values
+                                const newValues = [...formData.percentValues];
+                                newValues[index] = numValue;
+                                
+                                // Auto-check checkbox if value is entered (including 0.5, 0,5, etc.)
+                                const hasAnyValue = newValues.some(v => v !== 0);
+                                
+                                setFormData({
+                                  ...formData,
+                                  percentValues: newValues,
+                                  usePercent: hasAnyValue,
+                                  amountType: hasAnyValue && !formData.useFixed ? "percent" : formData.useFixed && hasAnyValue ? "percent" : formData.amountType,
+                                });
+                              }
+                            }}
+                            placeholder="e.g., 85 or 0,5 or 0.5"
+                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                          />
+                          {formData.percentValues.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newValues = formData.percentValues.filter((_, i) => i !== index);
+                                const newInputStrings = percentInputStrings.filter((_, i) => i !== index);
+                                const hasAnyValue = newValues.some(v => v > 0);
+                                setFormData({
+                                  ...formData,
+                                  percentValues: newValues,
+                                  usePercent: hasAnyValue,
+                                });
+                                setPercentInputStrings(newInputStrings);
+                              }}
+                              className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
+                            >
+                              ×
+                            </button>
+                          )}
+                          </div>
+                        )})}
+                    </div>
+                    {formData.usePercent && formData.percentValues.length > 0 && (
+                      <p className="mt-2 text-xs text-black/50">
+                        Total: {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%
+                      </p>
+                    )}
+                  </div>
                 </div>
+
+                {/* Fixed Amount Section */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.useFixed}
+                        onChange={(e) => {
+                          const useFixed = e.target.checked;
+                          setFormData({
+                            ...formData,
+                            useFixed,
+                            amountType: useFixed && !formData.usePercent ? "fixed" : formData.usePercent ? "fixed" : formData.amountType,
+                          });
+                        }}
+                        className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
+                      />
+                      <span className="text-sm font-medium text-black/70">
+                        Fixed dollar amount
+                      </span>
+                    </label>
+                    {formData.useFixed && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData({
+                            ...formData,
+                            fixedValues: [...formData.fixedValues, 0],
+                          });
+                          setFixedInputStrings([...fixedInputStrings, ""]);
+                        }}
+                        className="text-xs text-[#B40101] font-semibold hover:underline"
+                      >
+                        + Add Fixed Amount
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Fixed Values Input - Always visible */}
+                  <div className="ml-8 mt-2">
+                    <div className="space-y-2">
+                      {formData.fixedValues.map((value, index) => {
+                        // Ensure inputStrings array has enough elements
+                        const inputStr = fixedInputStrings[index] !== undefined 
+                          ? fixedInputStrings[index] 
+                          : (value === 0 ? "" : String(value));
+                        
+                        return (
+                        <div key={index} className="flex items-center gap-2">
+                          <span className="text-sm text-black/60 w-8">$</span>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={inputStr}
+                            onChange={(e) => {
+                              let inputValue = e.target.value.trim();
+                              
+                              // Allow empty, numbers, dots, commas, and intermediate states
+                              if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
+                                // Update input string array
+                                const newInputStrings = [...fixedInputStrings];
+                                newInputStrings[index] = inputValue;
+                                setFixedInputStrings(newInputStrings);
+                                
+                                // Replace comma with dot for parsing
+                                const normalizedValue = inputValue.replace(/,/g, '.');
+                                let numValue = 0;
+                                
+                                if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
+                                  numValue = 0;
+                                } else {
+                                  const parsed = parseFloat(normalizedValue);
+                                  numValue = isNaN(parsed) ? 0 : parsed;
+                                }
+                                
+                                // Update numeric values
+                                const newValues = [...formData.fixedValues];
+                                newValues[index] = numValue;
+                                
+                                // Auto-check checkbox if value is entered
+                                const hasAnyValue = newValues.some(v => v !== 0);
+                                
+                                setFormData({
+                                  ...formData,
+                                  fixedValues: newValues,
+                                  useFixed: hasAnyValue,
+                                  amountType: hasAnyValue && !formData.usePercent ? "fixed" : formData.usePercent && hasAnyValue ? "fixed" : formData.amountType,
+                                });
+                              }
+                            }}
+                            placeholder="e.g., 3000"
+                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                          />
+                            {formData.fixedValues.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newValues = formData.fixedValues.filter((_, i) => i !== index);
+                                  const newInputStrings = fixedInputStrings.filter((_, i) => i !== index);
+                                  const hasAnyValue = newValues.some(v => v > 0);
+                                  setFormData({
+                                    ...formData,
+                                    fixedValues: newValues,
+                                    useFixed: hasAnyValue,
+                                  });
+                                  setFixedInputStrings(newInputStrings);
+                                }}
+                                className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
+                              >
+                                ×
+                              </button>
+                            )}
+                        </div>
+                      )})}
+                    </div>
+                    {formData.useFixed && formData.fixedValues.length > 0 && (
+                      <p className="mt-2 text-xs text-black/50">
+                        Total: {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
                 {!formData.usePercent && !formData.useFixed && (
                   <p className="mt-2 text-xs text-red-500">
                     Please select at least one amount type (Percentage or Fixed)
                   </p>
                 )}
               </div>
-
-              {/* Percentage Values Input - Multiple */}
-              {formData.usePercent && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-black/70">
-                      Percentage Values <span className="text-red-500">*</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormData({
-                          ...formData,
-                          percentValues: [...formData.percentValues, 0],
-                        })
-                      }
-                      className="text-xs text-[#B40101] font-semibold hover:underline"
-                    >
-                      + Add Percentage
-                    </button>
-                  </div>
-                  {formData.percentValues.length === 0 ? (
-                    <p className="text-xs text-black/50 mb-2">
-                      Click "+ Add Percentage" to add percentage values
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {formData.percentValues.map((value, index) => (
-                        <div key={index} className="flex items-center gap-2">
-                          <span className="text-sm text-black/60 w-8">%</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={value}
-                            onChange={(e) => {
-                              const newValues = [...formData.percentValues];
-                              newValues[index] = parseFloat(e.target.value) || 0;
-                              setFormData({
-                                ...formData,
-                                percentValues: newValues,
-                              });
-                            }}
-                            placeholder="e.g., 85"
-                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newValues = formData.percentValues.filter((_, i) => i !== index);
-                              setFormData({
-                                ...formData,
-                                percentValues: newValues,
-                              });
-                            }}
-                            className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {formData.percentValues.length > 0 && (
-                    <p className="mt-2 text-xs text-black/50">
-                      Total: {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Fixed Values Input - Multiple */}
-              {formData.useFixed && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-black/70">
-                      Fixed Dollar Values <span className="text-red-500">*</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormData({
-                          ...formData,
-                          fixedValues: [...formData.fixedValues, 0],
-                        })
-                      }
-                      className="text-xs text-[#B40101] font-semibold hover:underline"
-                    >
-                      + Add Fixed Amount
-                    </button>
-                  </div>
-                  {formData.fixedValues.length === 0 ? (
-                    <p className="text-xs text-black/50 mb-2">
-                      Click "+ Add Fixed Amount" to add fixed dollar values
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {formData.fixedValues.map((value, index) => (
-                        <div key={index} className="flex items-center gap-2">
-                          <span className="text-sm text-black/60 w-8">$</span>
-                          <input
-                            type="number"
-                            step="1"
-                            value={value}
-                            onChange={(e) => {
-                              const newValues = [...formData.fixedValues];
-                              newValues[index] = parseFloat(e.target.value) || 0;
-                              setFormData({
-                                ...formData,
-                                fixedValues: newValues,
-                              });
-                            }}
-                            placeholder="e.g., 3000"
-                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const newValues = formData.fixedValues.filter((_, i) => i !== index);
-                              setFormData({
-                                ...formData,
-                                fixedValues: newValues,
-                              });
-                            }}
-                            className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {formData.fixedValues.length > 0 && (
-                    <p className="mt-2 text-xs text-black/50">
-                      Total: {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
-                    </p>
-                  )}
-                </div>
-              )}
 
               {/* Combined Preview */}
               {formData.usePercent && formData.useFixed && formData.parentId && (
@@ -1789,13 +1952,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                             : undefined,
                       }}
                     >
-                      {cat.toUpperCase()}
+                      {categoryDisplayNames[cat]}
                     </button>
                   ))}
                 </div>
-                <p className="mt-2 text-xs text-black/50">
-                  KW (Yellow), ERA (Red), PS (Blue), Neutral (Gray)
-                </p>
               </div>
               </div>
             </div>
@@ -1817,8 +1977,8 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                 disabled={
                   !formData.label.trim() ||
                   (!formData.usePercent && !formData.useFixed) ||
-                  (formData.usePercent && formData.percentValues.length === 0) ||
-                  (formData.useFixed && formData.fixedValues.length === 0)
+                  (formData.usePercent && (formData.percentValues.length === 0 || formData.percentValues.every(v => v === 0))) ||
+                  (formData.useFixed && (formData.fixedValues.length === 0 || formData.fixedValues.every(v => v === 0)))
                 }
                 className="flex-1 rounded-lg bg-[#B40101] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#950101] disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1925,25 +2085,28 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                   {savedFlowcharts.map((flowchart) => (
                     <div
                       key={flowchart.id}
-                      className="rounded-lg border border-black/10 p-4 hover:bg-black/5 transition-colors cursor-pointer"
-                      onClick={() => handleLoadFlowchart(flowchart)}
+                      className="rounded-lg border border-black/10 p-4 hover:bg-black/5 transition-colors"
                     >
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
-                          <h4 className="font-semibold text-black">{flowchart.name}</h4>
+                          <h4 className="font-semibold text-black cursor-pointer" onClick={() => handleLoadFlowchart(flowchart)}>
+                            {flowchart.name}
+                          </h4>
                           {flowchart.description && (
                             <p className="text-sm text-black/60 mt-1">
                               {flowchart.description}
                             </p>
                           )}
-                          <div className="flex items-center gap-4 mt-2 text-xs text-black/50">
-                            <span>
-                              {new Date(flowchart.created_at).toLocaleDateString()}
-                            </span>
-                            {flowchart.data?.nodes && (
-                              <span>{flowchart.data.nodes.length} nodes</span>
-                            )}
+                          <div className="flex items-center gap-2 mt-2 text-xs text-black/50">
+                            <span>Date Created: {formatDate(flowchart.created_at)}</span>
+                            <span>|</span>
+                            <span>Last Modified: {formatDate(flowchart.updated_at || flowchart.created_at)}</span>
                           </div>
+                          {flowchart.data?.nodes && (
+                            <div className="mt-1 text-xs text-black/40">
+                              {flowchart.data.nodes.length} nodes
+                            </div>
+                          )}
                         </div>
                         <div className="flex gap-2 ml-4">
                           <button
@@ -1971,6 +2134,15 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                               Duplicate
                             </button>
                           )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteFlowchart(flowchart.id, flowchart.name);
+                            }}
+                            className="rounded-lg border border-red-500 px-3 py-1.5 text-xs font-semibold text-red-500 transition-colors hover:bg-red-50"
+                          >
+                            Delete
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -2192,9 +2364,10 @@ type DraggableNodeProps = {
   isSelected: boolean;
   isDragging: boolean;
   calculatedAmount: number;
-  onClick: () => void;
+  onClick: (e?: React.MouseEvent) => void;
   onStartConnection: () => void;
   onEdit: () => void;
+  onDuplicate: () => void;
   onDelete: () => void;
 };
 
@@ -2208,6 +2381,7 @@ function DraggableNode({
   onClick,
   onStartConnection,
   onEdit,
+  onDuplicate,
   onDelete,
 }: DraggableNodeProps) {
   const {
@@ -2253,7 +2427,11 @@ function DraggableNode({
           borderLeftWidth: "4px",
           backgroundColor: categoryColor.bg,
         }}
-        onClick={onClick}
+        onClick={(e) => onClick(e)}
+        onDoubleClick={(e) => {
+          // Stop propagation to prevent canvas double-click from triggering
+          e.stopPropagation();
+        }}
       >
         <div className="flex h-full flex-col justify-between">
           <div
@@ -2334,7 +2512,7 @@ function DraggableNode({
               })()}
             </p>
           </div>
-          <div className="mt-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
+          <div className="mt-2 flex gap-1 justify-center opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -2354,6 +2532,16 @@ function DraggableNode({
               style={{ fontSize: `${10 * zoom}px` }}
             >
               Edit
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicate();
+              }}
+              className="rounded bg-purple-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-purple-600 pointer-events-auto z-10 relative"
+              style={{ fontSize: `${10 * zoom}px` }}
+            >
+              Duplicate
             </button>
             <button
               onClick={(e) => {

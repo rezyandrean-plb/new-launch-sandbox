@@ -221,10 +221,61 @@ export function useFlowchartSave() {
     return duplicate;
   };
 
+  const deleteFlowchart = async (id: string) => {
+    setIsSaving(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/flowcharts/${id}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        // Fallback to localStorage if API not available
+        if (response.status === 501) {
+          return deleteFromLocalStorage(id);
+        }
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to delete flowchart");
+      }
+
+      return { success: true };
+    } catch (err) {
+      // Fallback to localStorage on network errors
+      if (err instanceof TypeError && err.message.includes("fetch")) {
+        return deleteFromLocalStorage(id);
+      }
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      setError(errorMessage);
+      throw err;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const deleteFromLocalStorage = (id: string) => {
+    const saved = localStorage.getItem("savedFlowcharts");
+    if (!saved) throw new Error("Flowchart not found");
+
+    const flowcharts = JSON.parse(saved);
+    const filtered = flowcharts.filter((f: any) => f.id !== id);
+    
+    if (filtered.length === flowcharts.length) {
+      throw new Error("Flowchart not found");
+    }
+
+    localStorage.setItem("savedFlowcharts", JSON.stringify(filtered));
+    return { success: true };
+  };
+
   return {
     saveFlowchart,
     updateFlowchart,
     duplicateFlowchart,
+    deleteFlowchart,
     isSaving,
     error,
   };
