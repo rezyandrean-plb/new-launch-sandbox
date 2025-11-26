@@ -33,6 +33,10 @@ export type FlowchartNode = {
   formula?: string;
   parentId: string | null;
   calculatedAmount?: number;
+  customText?: string;
+  customTextSize?: number;
+  customTextBold?: boolean;
+  nodeType?: "box" | "text";
 };
 
 export type FlowchartConnection = {

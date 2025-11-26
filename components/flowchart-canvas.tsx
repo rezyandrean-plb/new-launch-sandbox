@@ -18,6 +18,15 @@ import { useFlowchartSave } from "@/lib/hooks/use-flowchart-save";
 import toast from "react-hot-toast";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
+import dynamic from "next/dynamic";
+const TextNoteEditor = dynamic(() => import("@/components/text-note-editor"), {
+  ssr: false,
+  loading: () => (
+    <div className="rounded-lg border border-black/20 px-4 py-2 text-sm text-black/60">
+      Loading editor...
+    </div>
+  ),
+});
 
 type AmountType = "percent" | "fixed" | "formula";
 
@@ -43,6 +52,10 @@ type FlowchartNode = {
   formula?: string;
   parentId: string | null;
   calculatedAmount?: number;
+  customText?: string;
+  customTextSize?: number;
+  customTextBold?: boolean;
+  nodeType?: "box" | "text";
 };
 
 type FlowchartConnection = {
@@ -117,7 +130,21 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     formula: "",
     parentId: null as string | null,
     category: "neutral" as NodeCategory,
+    customText: "",
+    customTextSize: 16,
+    customTextBold: false,
+    nodeType: "box" as "box" | "text",
   });
+  const [nodeModalMode, setNodeModalMode] = useState<"box" | "text">("box");
+  const isTextMode = nodeModalMode === "text";
+  const stripHtml = (value: string) => value.replace(/<[^>]+>/g, "").trim();
+  const boxNodeInvalid =
+    !formData.label.trim() ||
+    (!formData.usePercent && !formData.useFixed) ||
+    (formData.usePercent && (formData.percentValues.length === 0 || formData.percentValues.every((v) => v === 0))) ||
+    (formData.useFixed && (formData.fixedValues.length === 0 || formData.fixedValues.every((v) => v === 0)));
+  const textOnlyInvalid = stripHtml(formData.customText || "").length === 0;
+  const saveDisabled = isTextMode ? textOnlyInvalid : boxNodeInvalid;
 
   // Track raw input strings to allow typing "0" and continuing
   const [percentInputStrings, setPercentInputStrings] = useState<string[]>([]);
@@ -324,6 +351,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
             fixedValue: developerPayout,
             parentId: null,
             calculatedAmount: developerPayout,
+              nodeType: "box",
           });
       }
 
@@ -389,6 +417,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
             formula: "",
             parentId,
             calculatedAmount: calculatedAmounts[childId],
+            nodeType: "box",
           });
 
           addChildren(childId, nodeX, nodeY);
@@ -448,6 +477,11 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     }
 
     if (isConnecting && connectionStart && connectionStart !== nodeId) {
+      const targetNode = nodes.find((n) => n.id === nodeId);
+      if (targetNode?.nodeType === "text") {
+        toast.error("Cannot connect to text notes");
+        return;
+      }
       // Create connection and update parent
       const newConnection: FlowchartConnection = {
         id: `conn-${connectionStart}-${nodeId}`,
@@ -473,12 +507,18 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
   };
 
   const handleStartConnection = (nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (node?.nodeType === "text") {
+      toast.error("Text notes cannot be connected");
+      return;
+    }
     setIsConnecting(true);
     setConnectionStart(nodeId);
     setSelectedNode(nodeId);
   };
 
   const handleAddNode = () => {
+    setNodeModalMode("box");
     setEditingNodeId(null);
     setFormData({
       label: "",
@@ -492,6 +532,35 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
       formula: "",
       parentId: null,
       category: "neutral",
+      customText: "",
+      customTextSize: 16,
+      customTextBold: false,
+      nodeType: "box",
+    });
+    setPercentInputStrings([""]);
+    setFixedInputStrings([""]);
+    setIsNodeModalOpen(true);
+  };
+
+  const handleAddTextNote = () => {
+    setNodeModalMode("text");
+    setEditingNodeId(null);
+    setFormData({
+      label: "",
+      description: "",
+      amountType: "fixed",
+      amountValue: 0,
+      usePercent: false,
+      useFixed: false,
+      percentValues: [0],
+      fixedValues: [0],
+      formula: "",
+      parentId: null,
+      category: "neutral",
+      customText: "",
+      customTextSize: 18,
+      customTextBold: false,
+      nodeType: "text",
     });
     setPercentInputStrings([""]);
     setFixedInputStrings([""]);
@@ -501,6 +570,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
   const handleEditNode = (nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
     if (node) {
+      setNodeModalMode(node.nodeType === "text" ? "text" : "box");
       setEditingNodeId(nodeId);
       const percentValues = node.percentValues ?? (node.percentValue !== undefined ? [node.percentValue] : []);
       const fixedValues = node.fixedValues ?? (node.fixedValue !== undefined ? [node.fixedValue] : []);
@@ -519,6 +589,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
         formula: node.formula || "",
         parentId: node.parentId,
         category: node.category,
+        customText: node.customText || "",
+        customTextSize: node.customTextSize ?? 16,
+        customTextBold: node.customTextBold ?? false,
+        nodeType: node.nodeType === "text" ? "text" : "box",
       });
       // Initialize input strings from values
       setPercentInputStrings(finalPercentValues.map(v => v === 0 ? "" : String(v)));
@@ -528,7 +602,17 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
   };
 
   const handleSaveNode = () => {
-    if (!formData.label.trim()) return;
+    const normalizedCustomText = formData.customText ?? "";
+    const customTextValue = normalizedCustomText.length > 0 ? normalizedCustomText : undefined;
+    const nodeType = formData.nodeType ?? (nodeModalMode === "text" ? "text" : "box");
+    const plainTextValue = customTextValue ? stripHtml(customTextValue) : "";
+    const finalLabel =
+      nodeType === "text"
+        ? (plainTextValue || "Text")
+        : formData.label.trim();
+
+    if (nodeType !== "text" && !finalLabel) return;
+    if (nodeType === "text" && plainTextValue.length === 0) return;
 
     if (editingNodeId) {
       // Update existing node
@@ -537,8 +621,8 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
           node.id === editingNodeId
             ? {
                 ...node,
-                label: formData.label,
-                description: formData.description,
+                label: finalLabel,
+                description: nodeType === "text" ? undefined : formData.description,
                 amountType: formData.amountType,
                 amountValue: formData.amountValue,
                 usePercent: formData.usePercent,
@@ -546,20 +630,24 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
                 percentValues: formData.usePercent && formData.percentValues.length > 0 ? formData.percentValues : undefined,
                 fixedValues: formData.useFixed && formData.fixedValues.length > 0 ? formData.fixedValues : undefined,
                 formula: formData.formula,
-                parentId: formData.parentId,
+                parentId: nodeType === "text" ? null : formData.parentId,
                 category: formData.category,
+                customText: customTextValue,
+                customTextSize: formData.customTextSize,
+                customTextBold: formData.customTextBold,
+                nodeType,
               }
             : node
         )
       );
       
-      // Update connections if parent changed
-      if (formData.parentId) {
+      if (nodeType === "text") {
+        // Text notes should not maintain connections
+        setConnections((prev) => prev.filter((c) => c.to !== editingNodeId && c.from !== editingNodeId));
+      } else if (formData.parentId) {
         const parentId = formData.parentId;
         setConnections((prev) => {
-          // Remove old connection
           const filtered = prev.filter((c) => c.to !== editingNodeId);
-          // Check if new connection exists
           const connectionExists = filtered.some(
             (c) => c.from === parentId && c.to === editingNodeId
           );
@@ -576,19 +664,18 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
           return filtered;
         });
       } else {
-        // Remove connection if parent is removed
         setConnections((prev) => prev.filter((c) => c.to !== editingNodeId));
       }
     } else {
       // Create new node
       const newNode: FlowchartNode = {
         id: `node-${Date.now()}`,
-        label: formData.label,
-        description: formData.description,
+        label: finalLabel,
+        description: nodeType === "text" ? undefined : formData.description,
         x: 300 + Math.random() * 200,
         y: 200 + Math.random() * 200,
-        width: 200,
-        height: 120,
+        width: nodeType === "text" ? 240 : 200,
+        height: nodeType === "text" ? 100 : 120,
         category: formData.category,
         amountType: formData.amountType,
         amountValue: formData.amountValue,
@@ -597,12 +684,16 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
         percentValues: formData.usePercent && formData.percentValues.length > 0 ? formData.percentValues : undefined,
         fixedValues: formData.useFixed && formData.fixedValues.length > 0 ? formData.fixedValues : undefined,
         formula: formData.formula,
-        parentId: formData.parentId,
+        parentId: nodeType === "text" ? null : formData.parentId,
+        customText: customTextValue,
+        customTextSize: formData.customTextSize,
+        customTextBold: formData.customTextBold,
+        nodeType,
       };
       setNodes((prev) => [...prev, newNode]);
 
-      // Create connection if parent is selected
-      if (formData.parentId) {
+      // Create connection if parent is selected and node is not a text note
+      if (nodeType !== "text" && formData.parentId) {
         const parentId = formData.parentId; // Type narrowing
         setConnections((prev) => {
           // Check if connection already exists
@@ -1258,6 +1349,7 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
     return `M ${fromX} ${fromY} L ${fromX} ${midY} L ${toX} ${midY} L ${toX} ${toY}`;
   };
 
+
   return (
     <div className="rounded-3xl border border-black/10 bg-white p-6 shadow-sm">
       {/* File Name Display */}
@@ -1398,6 +1490,12 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
           className="rounded-lg bg-[#B40101] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#950101]"
         >
           + Add Node
+        </button>
+        <button
+          onClick={handleAddTextNote}
+          className="rounded-lg border border-black/20 px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-black/5 bg-white"
+        >
+          + Add Text Note
         </button>
         <button
           onClick={() => {
@@ -1592,371 +1690,432 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
 
             <div className="overflow-y-auto flex-1 p-6">
               <div className="space-y-4">
-              {/* Box / Node Name */}
-              <div>
-                <label className="block text-sm font-medium text-black/70 mb-1">
-                  Box / Node Name <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.label}
-                  onChange={(e) =>
-                    setFormData({ ...formData, label: e.target.value })
-                  }
-                  placeholder="e.g., Developer Payout, ERA 0.5% Agency"
-                  className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                />
-              </div>
-
-              {/* Description (optional) */}
-              <div>
-                <label className="block text-sm font-medium text-black/70 mb-1">
-                  Description (Optional)
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) =>
-                    setFormData({ ...formData, description: e.target.value })
-                  }
-                  placeholder="Additional details about this node"
-                  rows={2}
-                  className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                />
-              </div>
-
-              {/* Amount Type - Multiple Selection */}
-              <div>
-                <label className="block text-sm font-medium text-black/70 mb-2">
-                  Amount Type <span className="text-red-500">*</span>
-                </label>
-                
-                {/* Percentage Section */}
-                <div className="mb-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={formData.usePercent}
-                        onChange={(e) => {
-                          const usePercent = e.target.checked;
-                          setFormData({
-                            ...formData,
-                            usePercent,
-                            amountType: usePercent && !formData.useFixed ? "percent" : formData.useFixed ? "percent" : formData.amountType,
-                          });
-                        }}
-                        className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
+                {nodeModalMode === "text" ? (
+                  <>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      Create floating annotations that are independent from payout boxes. These notes sit on the canvas as plain text with no borders.
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Text <span className="text-red-500">*</span>
+                      </label>
+                      <TextNoteEditor
+                        value={formData.customText}
+                        onChange={(value) =>
+                          setFormData((prev) => ({
+                            ...prev,
+                            customText: value,
+                          }))
+                        }
                       />
-                      <span className="text-sm font-medium text-black/70">
-                        % of parent amount
-                      </span>
-                    </label>
-                    {formData.usePercent && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFormData({
-                            ...formData,
-                            percentValues: [...formData.percentValues, 0],
-                          });
-                          setPercentInputStrings([...percentInputStrings, ""]);
-                        }}
-                        className="text-xs text-[#B40101] font-semibold hover:underline"
-                      >
-                        + Add Percentage
-                      </button>
-                    )}
-                  </div>
-                  
-                  {/* Percentage Values Input - Always visible */}
-                  <div className="ml-8 mt-2">
-                      <div className="space-y-2">
-                        {formData.percentValues.map((value, index) => {
-                          // Ensure inputStrings array has enough elements
-                          const inputStr = percentInputStrings[index] !== undefined 
-                            ? percentInputStrings[index] 
-                            : (value === 0 ? "" : String(value));
-                          
-                          return (
-                          <div key={index} className="flex items-center gap-2">
-                          <span className="text-sm text-black/60 w-8">%</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Box / Node Name */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Box / Node Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.label}
+                        onChange={(e) =>
+                          setFormData({ ...formData, label: e.target.value })
+                        }
+                        placeholder="e.g., Developer Payout, ERA 0.5% Agency"
+                        className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Description (optional) */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Description (Optional)
+                      </label>
+                      <textarea
+                        value={formData.description}
+                        onChange={(e) =>
+                          setFormData({ ...formData, description: e.target.value })
+                        }
+                        placeholder="Additional details about this node"
+                        rows={2}
+                        className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Title Text */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Title Text (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.customText}
+                        onChange={(e) =>
+                          setFormData({ ...formData, customText: e.target.value })
+                        }
+                        placeholder="Add a short title that sits above this node"
+                        className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                      />
+                      <div className="mt-3 flex flex-wrap items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-black/70">
+                            Font Size
+                          </span>
                           <input
-                            type="text"
-                            inputMode="decimal"
-                            value={inputStr}
-                            onChange={(e) => {
-                              let inputValue = e.target.value.trim();
-                              
-                              // Allow empty, numbers, dots, commas, and intermediate states like "0," or "0."
-                              // Match: empty, numbers, numbers with one dot/comma, numbers with dot/comma and more digits
-                              if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
-                                // Update input string array
-                                const newInputStrings = [...percentInputStrings];
-                                newInputStrings[index] = inputValue;
-                                setPercentInputStrings(newInputStrings);
-                                
-                                // Replace comma with dot for parsing
-                                const normalizedValue = inputValue.replace(/,/g, '.');
-                                let numValue = 0;
-                                
-                                if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
-                                  numValue = 0;
-                                } else {
-                                  const parsed = parseFloat(normalizedValue);
-                                  numValue = isNaN(parsed) ? 0 : parsed;
-                                }
-                                
-                                // Update numeric values
-                                const newValues = [...formData.percentValues];
-                                newValues[index] = numValue;
-                                
-                                // Auto-check checkbox if value is entered (including 0.5, 0,5, etc.)
-                                const hasAnyValue = newValues.some(v => v !== 0);
-                                
+                            type="range"
+                            min={10}
+                            max={36}
+                            value={formData.customTextSize}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                customTextSize: Number(e.target.value),
+                              })
+                            }
+                            className="w-32 accent-[#B40101]"
+                          />
+                          <span className="text-xs font-semibold text-black/60">
+                            {formData.customTextSize}px
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFormData({
+                              ...formData,
+                              customTextBold: !formData.customTextBold,
+                            })
+                          }
+                          className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors ${
+                            formData.customTextBold
+                              ? "bg-[#B40101] text-white"
+                              : "border border-black/20 text-black hover:bg-black/5"
+                          }`}
+                        >
+                          Bold
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Amount Type - Multiple Selection */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-2">
+                        Amount Type <span className="text-red-500">*</span>
+                      </label>
+                      
+                      {/* Percentage Section */}
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={formData.usePercent}
+                              onChange={(e) => {
+                                const usePercent = e.target.checked;
                                 setFormData({
                                   ...formData,
-                                  percentValues: newValues,
-                                  usePercent: hasAnyValue,
-                                  amountType: hasAnyValue && !formData.useFixed ? "percent" : formData.useFixed && hasAnyValue ? "percent" : formData.amountType,
+                                  usePercent,
+                                  amountType: usePercent && !formData.useFixed ? "percent" : formData.useFixed ? "percent" : formData.amountType,
                                 });
-                              }
-                            }}
-                            placeholder="e.g., 85 or 0,5 or 0.5"
-                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                          />
-                          {formData.percentValues.length > 1 && (
+                              }}
+                              className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
+                            />
+                            <span className="text-sm font-medium text-black/70">
+                              % of parent amount
+                            </span>
+                          </label>
+                          {formData.usePercent && (
                             <button
                               type="button"
                               onClick={() => {
-                                const newValues = formData.percentValues.filter((_, i) => i !== index);
-                                const newInputStrings = percentInputStrings.filter((_, i) => i !== index);
-                                const hasAnyValue = newValues.some(v => v > 0);
                                 setFormData({
                                   ...formData,
-                                  percentValues: newValues,
-                                  usePercent: hasAnyValue,
+                                  percentValues: [...formData.percentValues, 0],
                                 });
-                                setPercentInputStrings(newInputStrings);
+                                setPercentInputStrings([...percentInputStrings, ""]);
                               }}
-                              className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
+                              className="text-xs text-[#B40101] font-semibold hover:underline"
                             >
-                              ×
+                              + Add Percentage
                             </button>
                           )}
-                          </div>
-                        )})}
-                    </div>
-                    {formData.usePercent && formData.percentValues.length > 0 && (
-                      <p className="mt-2 text-xs text-black/50">
-                        Total: {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Fixed Amount Section */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="flex items-center gap-3 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={formData.useFixed}
-                        onChange={(e) => {
-                          const useFixed = e.target.checked;
-                          setFormData({
-                            ...formData,
-                            useFixed,
-                            amountType: useFixed && !formData.usePercent ? "fixed" : formData.usePercent ? "fixed" : formData.amountType,
-                          });
-                        }}
-                        className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
-                      />
-                      <span className="text-sm font-medium text-black/70">
-                        Fixed dollar amount
-                      </span>
-                    </label>
-                    {formData.useFixed && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFormData({
-                            ...formData,
-                            fixedValues: [...formData.fixedValues, 0],
-                          });
-                          setFixedInputStrings([...fixedInputStrings, ""]);
-                        }}
-                        className="text-xs text-[#B40101] font-semibold hover:underline"
-                      >
-                        + Add Fixed Amount
-                      </button>
-                    )}
-                  </div>
-                  
-                  {/* Fixed Values Input - Always visible */}
-                  <div className="ml-8 mt-2">
-                    <div className="space-y-2">
-                      {formData.fixedValues.map((value, index) => {
-                        // Ensure inputStrings array has enough elements
-                        const inputStr = fixedInputStrings[index] !== undefined 
-                          ? fixedInputStrings[index] 
-                          : (value === 0 ? "" : String(value));
+                        </div>
                         
-                        return (
-                        <div key={index} className="flex items-center gap-2">
-                          <span className="text-sm text-black/60 w-8">$</span>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={inputStr}
-                            onChange={(e) => {
-                              let inputValue = e.target.value.trim();
+                        {/* Percentage Values Input */}
+                        <div className="ml-8 mt-2">
+                          <div className="space-y-2">
+                            {formData.percentValues.map((value, index) => {
+                              const inputStr = percentInputStrings[index] !== undefined 
+                                ? percentInputStrings[index] 
+                                : (value === 0 ? "" : String(value));
                               
-                              // Allow empty, numbers, dots, commas, and intermediate states
-                              if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
-                                // Update input string array
-                                const newInputStrings = [...fixedInputStrings];
-                                newInputStrings[index] = inputValue;
-                                setFixedInputStrings(newInputStrings);
-                                
-                                // Replace comma with dot for parsing
-                                const normalizedValue = inputValue.replace(/,/g, '.');
-                                let numValue = 0;
-                                
-                                if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
-                                  numValue = 0;
-                                } else {
-                                  const parsed = parseFloat(normalizedValue);
-                                  numValue = isNaN(parsed) ? 0 : parsed;
-                                }
-                                
-                                // Update numeric values
-                                const newValues = [...formData.fixedValues];
-                                newValues[index] = numValue;
-                                
-                                // Auto-check checkbox if value is entered
-                                const hasAnyValue = newValues.some(v => v !== 0);
-                                
+                              return (
+                                <div key={index} className="flex items-center gap-2">
+                                  <span className="text-sm text-black/60 w-8">%</span>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={inputStr}
+                                    onChange={(e) => {
+                                      let inputValue = e.target.value.trim();
+                                      if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
+                                        const newInputStrings = [...percentInputStrings];
+                                        newInputStrings[index] = inputValue;
+                                        setPercentInputStrings(newInputStrings);
+                                        
+                                        const normalizedValue = inputValue.replace(/,/g, '.');
+                                        let numValue = 0;
+                                        if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
+                                          numValue = 0;
+                                        } else {
+                                          const parsed = parseFloat(normalizedValue);
+                                          numValue = isNaN(parsed) ? 0 : parsed;
+                                        }
+                                        
+                                        const newValues = [...formData.percentValues];
+                                        newValues[index] = numValue;
+                                        const hasAnyValue = newValues.some(v => v !== 0);
+                                        
+                                        setFormData({
+                                          ...formData,
+                                          percentValues: newValues,
+                                          usePercent: hasAnyValue,
+                                          amountType: hasAnyValue && !formData.useFixed ? "percent" : formData.useFixed && hasAnyValue ? "percent" : formData.amountType,
+                                        });
+                                      }
+                                    }}
+                                    placeholder="e.g., 85 or 0,5 or 0.5"
+                                    className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                                  />
+                                  {formData.percentValues.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newValues = formData.percentValues.filter((_, i) => i !== index);
+                                        const newInputStrings = percentInputStrings.filter((_, i) => i !== index);
+                                        const hasAnyValue = newValues.some(v => v > 0);
+                                        setFormData({
+                                          ...formData,
+                                          percentValues: newValues,
+                                          usePercent: hasAnyValue,
+                                        });
+                                        setPercentInputStrings(newInputStrings);
+                                      }}
+                                      className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {formData.usePercent && formData.percentValues.length > 0 && (
+                            <p className="mt-2 text-xs text-black/50">
+                              Total: {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Fixed Amount Section */}
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={formData.useFixed}
+                              onChange={(e) => {
+                                const useFixed = e.target.checked;
                                 setFormData({
                                   ...formData,
-                                  fixedValues: newValues,
-                                  useFixed: hasAnyValue,
-                                  amountType: hasAnyValue && !formData.usePercent ? "fixed" : formData.usePercent && hasAnyValue ? "fixed" : formData.amountType,
+                                  useFixed,
+                                  amountType: useFixed && !formData.usePercent ? "fixed" : formData.usePercent ? "fixed" : formData.amountType,
                                 });
-                              }
-                            }}
-                            placeholder="e.g., 3000"
-                            className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                          />
-                            {formData.fixedValues.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newValues = formData.fixedValues.filter((_, i) => i !== index);
-                                  const newInputStrings = fixedInputStrings.filter((_, i) => i !== index);
-                                  const hasAnyValue = newValues.some(v => v > 0);
-                                  setFormData({
-                                    ...formData,
-                                    fixedValues: newValues,
-                                    useFixed: hasAnyValue,
-                                  });
-                                  setFixedInputStrings(newInputStrings);
-                                }}
-                                className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
-                              >
-                                ×
-                              </button>
-                            )}
+                              }}
+                              className="w-5 h-5 rounded border-black/20 text-[#B40101] focus:ring-[#B40101] focus:ring-2"
+                            />
+                            <span className="text-sm font-medium text-black/70">
+                              Fixed dollar amount
+                            </span>
+                          </label>
+                          {formData.useFixed && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData({
+                                  ...formData,
+                                  fixedValues: [...formData.fixedValues, 0],
+                                });
+                                setFixedInputStrings([...fixedInputStrings, ""]);
+                              }}
+                              className="text-xs text-[#B40101] font-semibold hover:underline"
+                            >
+                              + Add Fixed Amount
+                            </button>
+                          )}
                         </div>
-                      )})}
+                        
+                        <div className="ml-8 mt-2">
+                          <div className="space-y-2">
+                            {formData.fixedValues.map((value, index) => {
+                              const inputStr = fixedInputStrings[index] !== undefined 
+                                ? fixedInputStrings[index] 
+                                : (value === 0 ? "" : String(value));
+                              
+                              return (
+                                <div key={index} className="flex items-center gap-2">
+                                  <span className="text-sm text-black/60 w-8">$</span>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={inputStr}
+                                    onChange={(e) => {
+                                      let inputValue = e.target.value.trim();
+                                      if (inputValue === "" || /^-?\d*[,.]?\d*$/.test(inputValue)) {
+                                        const newInputStrings = [...fixedInputStrings];
+                                        newInputStrings[index] = inputValue;
+                                        setFixedInputStrings(newInputStrings);
+                                        
+                                        const normalizedValue = inputValue.replace(/,/g, '.');
+                                        let numValue = 0;
+                                        if (inputValue === "" || inputValue === "-" || inputValue === "," || inputValue === ".") {
+                                          numValue = 0;
+                                        } else {
+                                          const parsed = parseFloat(normalizedValue);
+                                          numValue = isNaN(parsed) ? 0 : parsed;
+                                        }
+                                        
+                                        const newValues = [...formData.fixedValues];
+                                        newValues[index] = numValue;
+                                        const hasAnyValue = newValues.some(v => v !== 0);
+                                        
+                                        setFormData({
+                                          ...formData,
+                                          fixedValues: newValues,
+                                          useFixed: hasAnyValue,
+                                          amountType: hasAnyValue && !formData.usePercent ? "fixed" : formData.usePercent && hasAnyValue ? "fixed" : formData.amountType,
+                                        });
+                                      }
+                                    }}
+                                    placeholder="e.g., 3000"
+                                    className="flex-1 rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                                  />
+                                  {formData.fixedValues.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newValues = formData.fixedValues.filter((_, i) => i !== index);
+                                        const newInputStrings = fixedInputStrings.filter((_, i) => i !== index);
+                                        const hasAnyValue = newValues.some(v => v > 0);
+                                        setFormData({
+                                          ...formData,
+                                          fixedValues: newValues,
+                                          useFixed: hasAnyValue,
+                                        });
+                                        setFixedInputStrings(newInputStrings);
+                                      }}
+                                      className="text-red-500 hover:text-red-700 px-2 py-1 text-sm font-semibold"
+                                    >
+                                      ×
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {formData.useFixed && formData.fixedValues.length > 0 && (
+                            <p className="mt-2 text-xs text-black/50">
+                              Total: {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {!formData.usePercent && !formData.useFixed && (
+                        <p className="mt-2 text-xs text-red-500">
+                          Please select at least one amount type (Percentage or Fixed)
+                        </p>
+                      )}
                     </div>
-                    {formData.useFixed && formData.fixedValues.length > 0 && (
-                      <p className="mt-2 text-xs text-black/50">
-                        Total: {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
-                      </p>
+
+                    {/* Combined Preview */}
+                    {formData.usePercent && formData.useFixed && formData.parentId && (
+                      <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                        <p className="text-xs font-medium text-blue-900 mb-1">
+                          Calculation Preview:
+                        </p>
+                        <p className="text-xs text-blue-700">
+                          (Parent Amount × {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%) + {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
+                        </p>
+                      </div>
                     )}
-                  </div>
-                </div>
 
-                {!formData.usePercent && !formData.useFixed && (
-                  <p className="mt-2 text-xs text-red-500">
-                    Please select at least one amount type (Percentage or Fixed)
-                  </p>
+                    {/* Parent Node Selection */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Parent Node
+                      </label>
+                      <select
+                        value={formData.parentId || ""}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            parentId: e.target.value || null,
+                          })
+                        }
+                        className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
+                      >
+                        <option value="">None (Root Node)</option>
+                        {nodes
+                          .filter((n) => n.id !== editingNodeId)
+                          .map((node) => (
+                            <option key={node.id} value={node.id}>
+                              {node.label}
+                            </option>
+                          ))}
+                      </select>
+                      <p className="mt-1 text-xs text-black/50">
+                        Select a parent node to attach this box under. Amount will auto-recalculate based on parent's value.
+                      </p>
+                    </div>
+
+                    {/* Display Color / Category */}
+                    <div>
+                      <label className="block text-sm font-medium text-black/70 mb-1">
+                        Display Color / Category
+                      </label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {(["kw", "era", "ps", "neutral"] as NodeCategory[]).map((cat) => (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() =>
+                              setFormData({ ...formData, category: cat })
+                            }
+                            className={`rounded-lg border-2 px-4 py-2 text-sm font-semibold transition-all ${
+                              formData.category === cat
+                                ? "border-black ring-2 ring-offset-2"
+                                : "border-black/20"
+                            }`}
+                            style={{
+                              backgroundColor: categoryColors[cat].bg,
+                              color: categoryColors[cat].text,
+                              borderColor:
+                                formData.category === cat
+                                  ? categoryColors[cat].border
+                                  : undefined,
+                            }}
+                          >
+                            {categoryDisplayNames[cat]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
                 )}
-              </div>
-
-              {/* Combined Preview */}
-              {formData.usePercent && formData.useFixed && formData.parentId && (
-                <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
-                  <p className="text-xs font-medium text-blue-900 mb-1">
-                    Calculation Preview:
-                  </p>
-                  <p className="text-xs text-blue-700">
-                    (Parent Amount × {formData.percentValues.reduce((sum, val) => sum + val, 0).toFixed(2)}%) + {formatCurrency(formData.fixedValues.reduce((sum, val) => sum + val, 0))}
-                  </p>
-                </div>
-              )}
-
-              {/* Parent Node Selection */}
-              <div>
-                <label className="block text-sm font-medium text-black/70 mb-1">
-                  Parent Node
-                </label>
-                <select
-                  value={formData.parentId || ""}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      parentId: e.target.value || null,
-                    })
-                  }
-                  className="w-full rounded-lg border border-black/20 px-4 py-2 text-base text-black focus:border-[#B40101] focus:outline-none"
-                >
-                  <option value="">None (Root Node)</option>
-                  {nodes
-                    .filter((n) => n.id !== editingNodeId)
-                    .map((node) => (
-                      <option key={node.id} value={node.id}>
-                        {node.label}
-                      </option>
-                    ))}
-                </select>
-                <p className="mt-1 text-xs text-black/50">
-                  Select a parent node to attach this box under. Amount will auto-recalculate based on parent's value.
-                </p>
-              </div>
-
-              {/* Display Color / Category */}
-              <div>
-                <label className="block text-sm font-medium text-black/70 mb-1">
-                  Display Color / Category
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(["kw", "era", "ps", "neutral"] as NodeCategory[]).map((cat) => (
-                    <button
-                      key={cat}
-                      type="button"
-                      onClick={() =>
-                        setFormData({ ...formData, category: cat })
-                      }
-                      className={`rounded-lg border-2 px-4 py-2 text-sm font-semibold transition-all ${
-                        formData.category === cat
-                          ? "border-black ring-2 ring-offset-2"
-                          : "border-black/20"
-                      }`}
-                      style={{
-                        backgroundColor: categoryColors[cat].bg,
-                        color: categoryColors[cat].text,
-                        borderColor:
-                          formData.category === cat
-                            ? categoryColors[cat].border
-                            : undefined,
-                      }}
-                    >
-                      {categoryDisplayNames[cat]}
-                    </button>
-                  ))}
-                </div>
-              </div>
               </div>
             </div>
 
@@ -1974,15 +2133,10 @@ export default function FlowchartCanvas({ initialData }: FlowchartCanvasProps) {
               <button
                 type="button"
                 onClick={handleSaveNode}
-                disabled={
-                  !formData.label.trim() ||
-                  (!formData.usePercent && !formData.useFixed) ||
-                  (formData.usePercent && (formData.percentValues.length === 0 || formData.percentValues.every(v => v === 0))) ||
-                  (formData.useFixed && (formData.fixedValues.length === 0 || formData.fixedValues.every(v => v === 0)))
-                }
+                disabled={saveDisabled}
                 className="flex-1 rounded-lg bg-[#B40101] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#950101] disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {editingNodeId ? "Save Changes" : "Create Node"}
+                {editingNodeId ? "Save Changes" : isTextMode ? "Create Text Note" : "Create Node"}
               </button>
             </div>
           </div>
@@ -2402,75 +2556,95 @@ function DraggableNode({
     left: node.x * zoom + pan.x,
     top: node.y * zoom + pan.y,
   };
+  const isTextNode = node.nodeType === "text";
+  const normalizedCustomText = node.customText?.trim();
+  const showCustomText = !isTextNode && Boolean(normalizedCustomText);
+  const headerFontSize = ((node.customTextSize ?? 16) * zoom);
 
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        ...style,
-        position: "absolute",
-        ...position,
-        width: node.width * zoom,
-        height: node.height * zoom,
-        zIndex: isDragging ? 50 : isSelected ? 10 : 1,
-      }}
-      className={`group cursor-move ${isDragging ? "opacity-80" : ""}`}
-    >
+  const textDisplayHtml =
+    normalizedCustomText && normalizedCustomText.trim().length > 0
+      ? normalizedCustomText
+      : "Text";
+
+  const card = isTextNode ? (
+    <div className="flex flex-col gap-1" onClick={(e) => onClick(e)}>
       <div
-        className={`h-full rounded-xl border-2 bg-white p-3 shadow-md transition-all ${
-          isSelected
-            ? "ring-2 ring-[#B40101] ring-offset-2"
-            : "border-black/10"
-        }`}
+        {...listeners}
+        {...attributes}
+        className="cursor-move select-none whitespace-pre-wrap break-words"
         style={{
-          borderLeftColor: categoryColor.border,
-          borderLeftWidth: "4px",
-          backgroundColor: categoryColor.bg,
+          fontSize: `${(node.customTextSize ?? 32) * zoom}px`,
+          color: categoryColor.text,
+          textShadow: "0 0 24px rgba(255,255,255,0.85)",
+          lineHeight: 1.1,
         }}
-        onClick={(e) => onClick(e)}
-        onDoubleClick={(e) => {
-          // Stop propagation to prevent canvas double-click from triggering
-          e.stopPropagation();
-        }}
-      >
-        <div className="flex h-full flex-col justify-between">
-          <div
-            {...listeners}
-            {...attributes}
-            className="cursor-grab active:cursor-grabbing flex-1"
+        dangerouslySetInnerHTML={{ __html: textDisplayHtml }}
+      />
+      <div className="mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto text-[10px]">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDuplicate();
+          }}
+          className="rounded bg-purple-500 px-2 py-1 font-semibold text-white transition-colors hover:bg-purple-600"
+          style={{ fontSize: `${10 * zoom}px` }}
+        >
+          Copy
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit();
+          }}
+          className="rounded bg-blue-500 px-2 py-1 font-semibold text-white transition-colors hover:bg-blue-600"
+          style={{ fontSize: `${10 * zoom}px` }}
+        >
+          Edit
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="rounded bg-red-500 px-2 py-1 font-semibold text-white transition-colors hover:bg-red-600"
+          style={{ fontSize: `${10 * zoom}px` }}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div
+      className={`h-full rounded-xl border-2 bg-white p-3 shadow-md transition-all ${
+        isSelected ? "ring-2 ring-[#B40101] ring-offset-2" : "border-black/10"
+      }`}
+      style={{
+        borderLeftColor: categoryColor.border,
+        borderLeftWidth: "4px",
+        backgroundColor: categoryColor.bg,
+      }}
+      onClick={(e) => onClick(e)}
+      onDoubleClick={(e) => {
+        // Stop propagation to prevent canvas double-click from triggering
+        e.stopPropagation();
+      }}
+    >
+      <div className="flex h-full flex-col justify-between">
+        <div
+          {...listeners}
+          {...attributes}
+          className="cursor-grab active:cursor-grabbing flex-1"
+        >
+          <h3
+            className="text-xs font-semibold uppercase tracking-wide"
+            style={{
+              fontSize: `${12 * zoom}px`,
+              color: categoryColor.text,
+            }}
           >
-            <h3
-              className="text-xs font-semibold uppercase tracking-wide"
-              style={{
-                fontSize: `${12 * zoom}px`,
-                color: categoryColor.text,
-              }}
-            >
-              {node.label}
-            </h3>
-            {node.description && (
-              <p
-                className="mt-1 text-xs"
-                style={{
-                  fontSize: `${10 * zoom}px`,
-                  color: categoryColor.text,
-                  opacity: 0.7,
-                }}
-              >
-                {node.description}
-              </p>
-            )}
-            {calculatedAmount > 0 && (
-              <p
-                className="mt-2 text-lg font-semibold"
-                style={{
-                  fontSize: `${16 * zoom}px`,
-                  color: categoryColor.text,
-                }}
-              >
-                {formatCurrency(calculatedAmount)}
-              </p>
-            )}
+            {node.label}
+          </h3>
+          {node.description && (
             <p
               className="mt-1 text-xs"
               style={{
@@ -2479,83 +2653,138 @@ function DraggableNode({
                 opacity: 0.7,
               }}
             >
-              {(() => {
-                const percentTotal = node.percentValues?.reduce((sum, val) => sum + val, 0) ?? 
-                                   (node.percentValue ?? 0);
-                const fixedTotal = node.fixedValues?.reduce((sum, val) => sum + val, 0) ?? 
-                                 (node.fixedValue ?? 0);
-                
-                if (node.usePercent && node.useFixed) {
-                  const percentDisplay = node.percentValues && node.percentValues.length > 1
-                    ? `${node.percentValues.join("% + ")}%`
-                    : `${percentTotal}%`;
-                  const fixedDisplay = node.fixedValues && node.fixedValues.length > 1
-                    ? `+ ${node.fixedValues.map(v => formatCurrency(v)).join(" + ")}`
-                    : `+ ${formatCurrency(fixedTotal)}`;
-                  return `${percentDisplay} ${fixedDisplay}`;
-                } else if (node.usePercent && percentTotal > 0) {
-                  if (node.percentValues && node.percentValues.length > 1) {
-                    return `${node.percentValues.join("% + ")}% of parent`;
-                  }
-                  return `${percentTotal}% of parent`;
-                } else if (node.useFixed && fixedTotal > 0) {
-                  if (node.fixedValues && node.fixedValues.length > 1) {
-                    return `Fixed: ${node.fixedValues.map(v => formatCurrency(v)).join(" + ")}`;
-                  }
-                  return `Fixed: ${formatCurrency(fixedTotal)}`;
-                } else if (node.amountType === "percent") {
-                  return `${node.amountValue}% of parent`;
-                } else if (node.amountType === "fixed") {
-                  return `Fixed: ${formatCurrency(node.amountValue)}`;
-                }
-                return "No amount set";
-              })()}
+              {node.description}
             </p>
-          </div>
-          <div className="mt-2 flex gap-1 justify-center opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onStartConnection();
+          )}
+          {calculatedAmount > 0 && (
+            <p
+              className="mt-2 text-lg font-semibold"
+              style={{
+                fontSize: `${16 * zoom}px`,
+                color: categoryColor.text,
               }}
-              className="rounded bg-[#B40101] px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-[#950101] pointer-events-auto z-10 relative"
-              style={{ fontSize: `${10 * zoom}px` }}
             >
-              Connect
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit();
-              }}
-              className="rounded bg-blue-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-blue-600 pointer-events-auto z-10 relative"
-              style={{ fontSize: `${10 * zoom}px` }}
-            >
-              Edit
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDuplicate();
-              }}
-              className="rounded bg-purple-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-purple-600 pointer-events-auto z-10 relative"
-              style={{ fontSize: `${10 * zoom}px` }}
-            >
-              Duplicate
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
-              className="rounded bg-red-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-red-600 pointer-events-auto z-10 relative"
-              style={{ fontSize: `${10 * zoom}px` }}
-            >
-              Delete
-            </button>
-          </div>
+              {formatCurrency(calculatedAmount)}
+            </p>
+          )}
+          <p
+            className="mt-1 text-xs"
+            style={{
+              fontSize: `${10 * zoom}px`,
+              color: categoryColor.text,
+              opacity: 0.7,
+            }}
+          >
+            {(() => {
+              const percentTotal =
+                node.percentValues?.reduce((sum, val) => sum + val, 0) ??
+                (node.percentValue ?? 0);
+              const fixedTotal =
+                node.fixedValues?.reduce((sum, val) => sum + val, 0) ??
+                (node.fixedValue ?? 0);
+              
+              if (node.usePercent && node.useFixed) {
+                const percentDisplay = node.percentValues && node.percentValues.length > 1
+                  ? `${node.percentValues.join("% + ")}%`
+                  : `${percentTotal}%`;
+                const fixedDisplay = node.fixedValues && node.fixedValues.length > 1
+                  ? `+ ${node.fixedValues.map(v => formatCurrency(v)).join(" + ")}`
+                  : `+ ${formatCurrency(fixedTotal)}`;
+                return `${percentDisplay} ${fixedDisplay}`;
+              } else if (node.usePercent && percentTotal > 0) {
+                if (node.percentValues && node.percentValues.length > 1) {
+                  return `${node.percentValues.join("% + ")}% of parent`;
+                }
+                return `${percentTotal}% of parent`;
+              } else if (node.useFixed && fixedTotal > 0) {
+                if (node.fixedValues && node.fixedValues.length > 1) {
+                  return `Fixed: ${node.fixedValues.map(v => formatCurrency(v)).join(" + ")}`;
+                }
+                return `Fixed: ${formatCurrency(fixedTotal)}`;
+              } else if (node.amountType === "percent") {
+                return `${node.amountValue}% of parent`;
+              } else if (node.amountType === "fixed") {
+                return `Fixed: ${formatCurrency(node.amountValue)}`;
+              }
+              return "No amount set";
+            })()}
+          </p>
+        </div>
+        <div className="mt-2 flex gap-1 justify-center opacity-0 transition-opacity group-hover:opacity-100 pointer-events-auto">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onStartConnection();
+            }}
+            className="rounded bg-[#B40101] px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-[#950101] pointer-events-auto z-10 relative"
+            style={{ fontSize: `${10 * zoom}px` }}
+          >
+            Connect
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onEdit();
+            }}
+            className="rounded bg-blue-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-blue-600 pointer-events-auto z-10 relative"
+            style={{ fontSize: `${10 * zoom}px` }}
+          >
+            Edit
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDuplicate();
+            }}
+            className="rounded bg-purple-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-purple-600 pointer-events-auto z-10 relative"
+            style={{ fontSize: `${10 * zoom}px` }}
+          >
+            Duplicate
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="rounded bg-red-500 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-red-600 pointer-events-auto z-10 relative"
+            style={{ fontSize: `${10 * zoom}px` }}
+          >
+            Delete
+          </button>
         </div>
       </div>
+    </div>
+  );
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        ...style,
+        position: "absolute",
+        ...position,
+        width: isTextNode ? "auto" : node.width * zoom,
+        height: isTextNode ? "auto" : node.height * zoom,
+        zIndex: isDragging ? 50 : isSelected ? 10 : 1,
+        overflow: "visible",
+      }}
+      className={`group cursor-move ${isDragging ? "opacity-80" : ""}`}
+    >
+      {showCustomText && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 rounded-md border border-black/10 bg-white/90 px-2 py-1 text-center text-black shadow-sm pointer-events-none"
+          style={{
+            top: `-${headerFontSize + 8}px`,
+            fontSize: `${headerFontSize}px`,
+            fontWeight: node.customTextBold ? 700 : 500,
+            color: categoryColor.text,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {normalizedCustomText}
+        </div>
+      )}
+      {card}
     </div>
   );
 }
